@@ -7,6 +7,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Cache cargo plugins
+        uses: actions/cache@v1
+        with:
+          path: ~/.cargo/bin/
+          key: ${{ runner.os }}-cargo-bins
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - run: cargo install wasm-pack
+
       - name: Checkout
         uses: actions/checkout@v2.3.1
 
