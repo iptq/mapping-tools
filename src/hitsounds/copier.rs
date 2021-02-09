@@ -46,8 +46,8 @@ pub fn copy_hitsounds(opts: CopyHitsoundOpts) -> Result<()> {
 /// beatmap without more information from the original beatmap.
 #[derive(Debug)]
 pub struct HitsoundData {
-    hits: Vec<HitsoundInfo>,
-    vols: Vec<(Millis, u16)>,
+    pub hits: Vec<HitsoundInfo>,
+    pub tps: Vec<SectionProps>,
 }
 
 /// Hitsound data for a single instant
@@ -58,11 +58,19 @@ pub struct HitsoundInfo {
     pub sample_info: SampleInfo,
 }
 
+/// Properties of a timing section any time it can be changed
+#[derive(Debug)]
+pub struct SectionProps {
+    pub time: f64,
+    pub vol: u16,
+    pub kiai: bool,
+}
+
 /// Returns all the information extracted from the beatmap that can be used to copy hitsounds to a
 /// different beatmap.
 fn collect_hitsounds(beatmap: &Beatmap, _opts: &CopyHitsoundOpts) -> Result<HitsoundData> {
     let mut hits = Vec::new();
-    let hit_times = get_hit_times(beatmap)?;
+    let hit_times = get_hit_times(beatmap, false)?;
 
     let mut tp_idx = 0;
     for (hit_time, ho_idx, repeat_idx) in hit_times {
@@ -91,7 +99,10 @@ fn collect_hitsounds(beatmap: &Beatmap, _opts: &CopyHitsoundOpts) -> Result<Hits
         // note: if it's a slider, get addition info from the edge_additions
         let additions = if let HitObjectKind::Slider(info) = &ho.kind {
             if let Some(repeat_idx) = repeat_idx {
-                info.edge_additions[repeat_idx]
+                info.edge_additions
+                    .get(repeat_idx)
+                    .cloned()
+                    .unwrap_or(ho.additions)
             } else {
                 ho.additions
             }
@@ -104,9 +115,10 @@ fn collect_hitsounds(beatmap: &Beatmap, _opts: &CopyHitsoundOpts) -> Result<Hits
         let mut sample_info = if let HitObjectKind::Slider(info) = &ho.kind {
             let mut sample_info = ho.sample_info.clone();
             if let Some(repeat_idx) = repeat_idx {
-                let samplesets = info.edge_samplesets[repeat_idx];
-                sample_info.sample_set = samplesets.0;
-                sample_info.addition_set = samplesets.1;
+                if let Some(samplesets) = info.edge_samplesets.get(repeat_idx) {
+                    sample_info.sample_set = samplesets.0;
+                    sample_info.addition_set = samplesets.1;
+                }
             }
             sample_info
         } else {
@@ -131,26 +143,17 @@ fn collect_hitsounds(beatmap: &Beatmap, _opts: &CopyHitsoundOpts) -> Result<Hits
     }
     hits.sort_by_key(|h| NotNan::new(h.time).unwrap());
 
-    let mut vols = Vec::new();
-
-    // collect all the volumes from the timing points
-    let mut last_vol = None;
+    let mut tps = Vec::new();
     for tp in beatmap.timing_points.iter() {
-        let should_push = if let Some(last_vol) = last_vol {
-            last_vol != tp.volume
-        } else {
-            true
-        };
-
-        if should_push {
-            vols.push((tp.time, tp.volume));
-        }
-
-        last_vol = Some(tp.volume);
+        tps.push(SectionProps {
+            time: tp.time.as_seconds(),
+            vol: tp.volume,
+            kiai: tp.kiai,
+        });
     }
-    vols.sort_by_key(|(t, _)| *t);
+    tps.sort_by_key(|tp| NotNan::new(tp.time).unwrap());
 
-    Ok(HitsoundData { hits, vols })
+    Ok(HitsoundData { hits, tps })
 }
 
 /// Given a set of hitsound data, and a beatmap, applies the hitsound data to the beatmap.
@@ -165,10 +168,10 @@ fn apply_hitsounds(
 
     let leniency = Millis(opts.leniency as i32).as_seconds();
 
-    let hit_times = get_hit_times(&beatmap)?;
+    let hit_times = get_hit_times(&beatmap, false)?;
     for (hit_time, ho_idx, repeat_idx) in hit_times {
         // determine the hit using binary search over the collected data
-        let hit = match binary_search_for(hit_time, &hitsound_data.hits, leniency) {
+        let hit = match binary_search_for(hit_time, &hitsound_data.hits, leniency, repeat_idx) {
             Some(hit) => hit,
             None => {
                 info!("did not find hitsound for time={}", hit_time);
@@ -210,6 +213,7 @@ fn apply_hitsounds(
                 info.edge_samplesets[repeat_idx] =
                     (hit.sample_info.sample_set, hit.sample_info.addition_set);
                 info.edge_additions[repeat_idx] = hit.additions;
+
                 trace!(
                     "slider @ {} [repeat={}] (time={}) .edge_sets={:?}, .edge_additions={:?}",
                     ho.start_time.0,
@@ -226,10 +230,9 @@ fn apply_hitsounds(
     }
 
     // apply the volumes to the timing points
-    // loop over volume ranges
-    for w in hitsound_data.vols.windows(2) {
-        let (first_vol_t, first_vol) = w[0];
-        let (second_vol_t, second_vol) = w[1];
+    for w in hitsound_data.tps.windows(2) {
+        let first = &w[0];
+        let second = &w[1];
     }
 
     Ok(())
@@ -260,6 +263,7 @@ fn binary_search_for(
     hit_time: f64,
     hit_times: &[HitsoundInfo],
     leniency: f64,
+    repeat_idx: Option<usize>,
 ) -> Option<&HitsoundInfo> {
     trace!("binary searching for {}", hit_time);
     let mut lo = 0;
@@ -289,7 +293,7 @@ fn binary_search_for(
 /// (timestamp in seconds, index of hitobject, index of repeat (if slider))
 ///
 /// Notably, this assumes that the hit_objects is sorted, since it refers to hit_objects by index
-fn get_hit_times(beatmap: &Beatmap) -> Result<Vec<(f64, usize, Option<usize>)>> {
+fn get_hit_times(beatmap: &Beatmap, slider_body: bool) -> Result<Vec<(f64, usize, Option<usize>)>> {
     let mut hit_times = Vec::new();
 
     for (idx, ho) in beatmap.hit_objects.iter().enumerate() {
@@ -297,9 +301,11 @@ fn get_hit_times(beatmap: &Beatmap) -> Result<Vec<(f64, usize, Option<usize>)>> 
         match &ho.kind {
             Circle => hit_times.push((ho.start_time.as_seconds(), idx, None)),
             Slider(info) => {
-                // this is for the sliderbody
                 let time = ho.start_time.as_seconds();
-                hit_times.push((time, idx, None));
+                if slider_body {
+                    // this is for the sliderbody
+                    hit_times.push((time, idx, None));
+                }
 
                 let duration = beatmap
                     .get_slider_duration(ho)
