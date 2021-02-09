@@ -13,31 +13,44 @@ pub struct CopyHitsoundOpts {
     /// The paths of maps to copy hitsounds to.
     pub dsts: Vec<PathBuf>,
 
+    #[structopt(flatten)]
+    pub extra: ExtraOpts,
+}
+
+#[derive(Default, Debug, StructOpt)]
+pub struct ExtraOpts {
     /// Temporal leniency, the number of milliseconds apart two objects can be apart
     #[structopt(short = "l", long = "leniency", default_value = "2")]
     pub leniency: u32,
 }
 
-pub fn copy_hitsounds(opts: CopyHitsoundOpts) -> Result<()> {
+pub fn copy_hitsounds_cmd(opts: CopyHitsoundOpts) -> Result<()> {
     let file = File::open(&opts.src)?;
     let src_beatmap = Beatmap::parse(file)?;
 
-    let hitsound_data = collect_hitsounds(&src_beatmap, &opts)?;
-    for hit in hitsound_data.hits.iter() {
-        debug!("collected_hit: {:?}", hit);
+    let mut dst_beatmaps = Vec::new();
+    for dst in opts.dsts.iter() {
+        let file = File::open(dst)?;
+        dst_beatmaps.push(Beatmap::parse(file)?);
     }
 
-    for dst in opts.dsts.iter() {
-        let mut dst_beatmap = {
-            let file = File::open(dst)?;
-            Beatmap::parse(file)?
-        };
+    copy_hitsounds(&src_beatmap, &mut dst_beatmaps, opts.extra)?;
 
-        apply_hitsounds(&hitsound_data, &mut dst_beatmap, &opts)?;
+    for (path, beatmap) in opts.dsts.iter().zip(dst_beatmaps) {
         {
-            let file = File::create(dst)?;
-            dst_beatmap.write(file)?;
+            let file = File::create(path)?;
+            beatmap.write(file)?;
         }
+    }
+
+    Ok(())
+}
+
+pub fn copy_hitsounds(src: &Beatmap, dsts: &mut Vec<Beatmap>, opts: ExtraOpts) -> Result<()> {
+    let hitsound_data = collect_hitsounds(&src, &opts)?;
+
+    for dst in dsts.iter_mut() {
+        apply_hitsounds(&hitsound_data, dst, &opts)?;
     }
 
     Ok(())
@@ -70,7 +83,7 @@ pub struct SectionProps {
 
 /// Returns all the information extracted from the beatmap that can be used to copy hitsounds to a
 /// different beatmap.
-fn collect_hitsounds(beatmap: &Beatmap, _opts: &CopyHitsoundOpts) -> Result<HitsoundData> {
+fn collect_hitsounds(beatmap: &Beatmap, _opts: &ExtraOpts) -> Result<HitsoundData> {
     let mut hits = Vec::new();
     let hit_times = get_hit_times(beatmap, false)?;
 
@@ -163,7 +176,7 @@ fn collect_hitsounds(beatmap: &Beatmap, _opts: &CopyHitsoundOpts) -> Result<Hits
 fn apply_hitsounds(
     hitsound_data: &HitsoundData,
     beatmap: &mut Beatmap,
-    opts: &CopyHitsoundOpts,
+    opts: &ExtraOpts,
 ) -> Result<()> {
     // doesn't hurt to make sure that these lists are sorted
     beatmap.hit_objects.sort_by_key(|ho| ho.start_time);

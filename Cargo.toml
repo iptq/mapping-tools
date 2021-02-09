@@ -4,6 +4,9 @@ version = "0.1.0"
 authors = ["Michael Zhang <mail@mzhang.io>"]
 edition = "2018"
 
+[workspace]
+members = ["mapping-tools-web"]
+
 [dependencies]
 anyhow = "1.0.38"
 libosu = { git = "https://github.com/iptq/libosu" }

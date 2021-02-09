@@ -33,7 +33,7 @@ impl Subcommand {
     pub fn run(self) -> Result<()> {
         use Subcommand::*;
         match self {
-            CopyHitsounds { opts } => mapping_tools::copy_hitsounds(opts),
+            CopyHitsounds { opts } => mapping_tools::copy_hitsounds_cmd(opts),
             ExtractMetadata { opts } => mapping_tools::extract_metadata(opts),
         }?;
         Ok(())
