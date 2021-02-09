@@ -1,0 +1,12 @@
+[package]
+name = "mapping-tools"
+version = "0.1.0"
+authors = ["Michael Zhang <mail@mzhang.io>"]
+edition = "2018"
+
+[dependencies]
+anyhow = "1.0.38"
+libosu = "0.0.21"
+serde = { version = "1.0.123", features = ["derive"] }
+structopt = "0.3.21"
+toml = "0.5.8"
