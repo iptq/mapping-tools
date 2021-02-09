@@ -15,7 +15,7 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-      - run: cargo install wasm-pack
+      - run: cargo install wasm-pack || true
 
       - name: checkout
         uses: actions/checkout@v2.3.1
