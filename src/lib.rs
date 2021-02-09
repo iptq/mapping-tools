@@ -11,6 +11,6 @@ mod c;
 mod hitsounds;
 mod metadata;
 
+pub use crate::c::*;
 pub use crate::hitsounds::*;
 pub use crate::metadata::*;
-pub use crate::c::*;
