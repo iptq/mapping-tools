@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::fs::File;
 use std::path::PathBuf;
 
@@ -64,6 +65,7 @@ pub struct SectionProps {
     pub time: f64,
     pub vol: u16,
     pub kiai: bool,
+    pub sample_index: u32,
 }
 
 /// Returns all the information extracted from the beatmap that can be used to copy hitsounds to a
@@ -149,6 +151,7 @@ fn collect_hitsounds(beatmap: &Beatmap, _opts: &CopyHitsoundOpts) -> Result<Hits
             time: tp.time.as_seconds(),
             vol: tp.volume,
             kiai: tp.kiai,
+            sample_index: tp.sample_index,
         });
     }
     tps.sort_by_key(|tp| NotNan::new(tp.time).unwrap());
@@ -171,9 +174,9 @@ fn apply_hitsounds(
     let hit_times = get_hit_times(&beatmap, false)?;
     for (hit_time, ho_idx, repeat_idx) in hit_times {
         // determine the hit using binary search over the collected data
-        let hit = match binary_search_for(hit_time, &hitsound_data.hits, leniency, repeat_idx) {
-            Some(hit) => hit,
-            None => {
+        let hit = match binary_search_for(hit_time, &hitsound_data.hits, |hit| hit.time, leniency) {
+            Ok(idx) => &hitsound_data.hits[idx],
+            Err(_) => {
                 info!("did not find hitsound for time={}", hit_time);
                 continue;
             }
@@ -230,9 +233,23 @@ fn apply_hitsounds(
     }
 
     // apply the volumes to the timing points
-    for w in hitsound_data.tps.windows(2) {
-        let first = &w[0];
-        let second = &w[1];
+    for tp in hitsound_data.tps.iter() {
+        let map_tp = match binary_search_for(
+            tp.time,
+            &beatmap.timing_points,
+            |tp| tp.time.as_seconds(),
+            leniency,
+        ) {
+            Ok(idx) => &mut beatmap.timing_points[idx],
+            Err(idx) => {
+                let tp = beatmap.timing_points[idx].clone();
+                beatmap.timing_points.insert(idx, tp);
+                &mut beatmap.timing_points[idx]
+            }
+        };
+
+        map_tp.sample_index = tp.sample_index;
+        map_tp.volume = tp.vol;
     }
 
     Ok(())
@@ -259,32 +276,72 @@ fn reset_hitsounds(beatmap: &mut Beatmap) {
     }
 }
 
-fn binary_search_for(
-    hit_time: f64,
-    hit_times: &[HitsoundInfo],
+/// Performs binary search using a leniency measure instead of exact equality.
+fn binary_search_for<T, F>(
+    needle: f64,
+    haystack: &[T],
+    extract: F,
     leniency: f64,
-    repeat_idx: Option<usize>,
-) -> Option<&HitsoundInfo> {
-    trace!("binary searching for {}", hit_time);
-    let mut lo = 0;
-    let mut hi = hit_times.len() - 1;
+) -> Result<usize, usize>
+where
+    T: Debug,
+    F: Fn(&T) -> f64,
+{
+    use std::cmp::Ordering::{self, *};
 
-    while hi >= lo {
-        let mid = (lo + hi) / 2;
-        let k = &hit_times[mid];
-        let time = k.time;
-        trace!("lo={} hi={} mid={} mid_t={} mid={:?}", lo, hi, mid, time, k);
-
-        if (time - hit_time).abs() < leniency {
-            return Some(k);
-        } else if time < hit_time {
-            lo = mid + 1;
-        } else {
-            hi = mid - 1;
-        }
+    trace!("binary searching for {}", needle);
+    let mut size = haystack.len();
+    if size == 0 {
+        return Err(0);
     }
 
-    None
+    // special cmp function that takes leniency into account
+    let cmp = move |a: f64, b: f64| -> Ordering {
+        if (a - b).abs() < leniency {
+            Equal
+        } else if a < b {
+            Less
+        } else {
+            Greater
+        }
+    };
+
+    let mut base = 0usize;
+    while size > 1 {
+        let half = size / 2;
+        let mid = base + half;
+        let el = unsafe { haystack.get_unchecked(mid) };
+        let t = extract(el);
+
+        let ord = cmp(t, needle);
+        base = if ord == Greater { base } else { mid };
+        size -= half;
+    }
+
+    let el = unsafe { haystack.get_unchecked(base) };
+    let t = extract(el);
+
+    let ord = cmp(t, needle);
+    if ord == Equal {
+        Ok(base)
+    } else {
+        Err(base + (ord == Less) as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::binary_search_for;
+
+    #[test]
+    fn test_binary_search() {
+        let id = |f: &f64| *f;
+        let list = [0.0, 1.0, 2.0, 3.0, 4.0];
+        assert_eq!(binary_search_for(2.05, &list, id, 0.1), Ok(2));
+        assert_eq!(binary_search_for(1.95, &list, id, 0.1), Ok(2));
+        assert_eq!(binary_search_for(2.05, &list, id, 0.03), Err(3));
+        assert_eq!(binary_search_for(1.95, &list, id, 0.03), Err(2));
+    }
 }
 
 /// Collect a list of EVERY possible time a hitsound could be played
