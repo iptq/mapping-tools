@@ -6,20 +6,24 @@ use libosu::prelude::*;
 
 #[derive(Debug, StructOpt)]
 pub struct CopyHitsoundOpts {
-    /// The map to copy hitsounds from.
+    /// The path of the map to copy hitsounds from.
     pub src: PathBuf,
 
-    /// The map to copy hitsounds to.
+    /// The paths of maps to copy hitsounds to.
     pub dsts: Vec<PathBuf>,
+
+    /// Temporal leniency, the number of milliseconds apart two objects can be apart
+    #[structopt(short = "l", long = "leniency", default_value = "2")]
+    pub leniency: u32,
 }
 
 pub fn copy_hitsounds(opts: CopyHitsoundOpts) -> Result<()> {
     let file = File::open(&opts.src)?;
     let src_beatmap = Beatmap::parse(file)?;
 
-    let hitsound_data = collect_hitsounds(&src_beatmap)?;
+    let hitsound_data = collect_hitsounds(&src_beatmap, &opts)?;
     for hit in hitsound_data.hits.iter() {
-        println!("{:?}", hit);
+        debug!("collected_hit: {:?}", hit);
     }
 
     for dst in opts.dsts.iter() {
@@ -28,7 +32,7 @@ pub fn copy_hitsounds(opts: CopyHitsoundOpts) -> Result<()> {
             Beatmap::parse(file)?
         };
 
-        apply_hitsounds(&hitsound_data, &mut dst_beatmap)?;
+        apply_hitsounds(&hitsound_data, &mut dst_beatmap, &opts)?;
         {
             let file = File::create(dst)?;
             dst_beatmap.write(file)?;
@@ -38,184 +42,194 @@ pub fn copy_hitsounds(opts: CopyHitsoundOpts) -> Result<()> {
     Ok(())
 }
 
+/// All information about the hitsounds in a single file, that can be used to copy to another
+/// beatmap without more information from the original beatmap.
 #[derive(Debug)]
 pub struct HitsoundData {
     hits: Vec<HitsoundInfo>,
+    vols: Vec<(Millis, u16)>,
 }
 
 /// Hitsound data for a single instant
 #[derive(Debug)]
 pub struct HitsoundInfo {
-    pub time: TimestampMillis,
-    pub vol: u16,
+    pub time: f64,
     pub additions: Additions,
-    pub sample_set: SampleSet,
-    pub addition_set: SampleSet,
+    pub sample_info: SampleInfo,
 }
 
 /// Returns all the information extracted from the beatmap that can be used to copy hitsounds to a
 /// different beatmap.
-fn collect_hitsounds(beatmap: &Beatmap) -> Result<HitsoundData> {
+fn collect_hitsounds(beatmap: &Beatmap, _opts: &CopyHitsoundOpts) -> Result<HitsoundData> {
     let mut hits = Vec::new();
+    let hit_times = get_hit_times(beatmap)?;
 
-    for (ho, tp) in beatmap.double_iter() {
-        let start_time = ho.start_time;
-
-        // if this hitsound doesn't have a sample set, default to the timing point's
-        let sample_set = if let SampleSet::None = ho.sample_info.sample_set {
-            tp.sample_set
-        } else {
-            ho.sample_info.sample_set
+    let mut tp_idx = 0;
+    for (hit_time, ho_idx, repeat_idx) in hit_times {
+        // find out the correct timing point corresponding to this time
+        // TODO: could possibly just track this with a variable?
+        let tp = match (
+            beatmap.timing_points.get(tp_idx),
+            beatmap.timing_points.get(tp_idx + 1),
+        ) {
+            // next one if we're there
+            (_, Some(tp)) if Millis::from_seconds(hit_time) >= tp.time => {
+                tp_idx += 1; // bump up the timing point index
+                tp
+            }
+            (Some(tp), _) => tp, // last timing point
+            _ => break,          // we're out of timing points?
         };
 
-        // if this hitsound doesn't have an addition set, then use the sample set
-        let addition_set = if let SampleSet::None = ho.sample_info.addition_set {
-            sample_set
-        } else {
-            ho.sample_info.addition_set
+        // get the hitobject
+        let ho = match beatmap.hit_objects.get(ho_idx) {
+            Some(ho) => ho,
+            None => continue,
         };
 
-        match &ho.kind {
-            HitObjectKind::Circle => {
-                hits.push(HitsoundInfo {
-                    time: start_time,
-                    vol: tp.volume,
-                    sample_set,
-                    addition_set,
-                    additions: ho.additions,
-                });
+        // check for the additions
+        // note: if it's a slider, get addition info from the edge_additions
+        let additions = if let HitObjectKind::Slider(info) = &ho.kind {
+            if let Some(repeat_idx) = repeat_idx {
+                info.edge_additions[repeat_idx]
+            } else {
+                ho.additions
             }
+        } else {
+            ho.additions
+        };
 
-            HitObjectKind::Slider(info) => {
-                let duration = beatmap.get_slider_duration(ho).unwrap();
-                let mut time = ho.start_time.0 as f64;
-
-                // add a hitsound for each slider repeat (called "edge")
-                for (additions, (normal_set, addition_set)) in
-                    info.edge_additions.iter().zip(info.edge_samplesets.iter())
-                {
-                    let edge_sample_set = if let SampleSet::None = normal_set {
-                        // default to the hit object's sample set
-                        sample_set
-                    } else {
-                        *normal_set
-                    };
-                    let edge_addition_set = if let SampleSet::None = addition_set {
-                        // default to the edge sample set
-                        edge_sample_set
-                    } else {
-                        *addition_set
-                    };
-                    hits.push(HitsoundInfo {
-                        time: TimestampMillis(time as i32),
-                        vol: tp.volume,
-                        sample_set: edge_sample_set,
-                        addition_set: edge_addition_set,
-                        additions: *additions,
-                    });
-                    time += duration;
-                }
+        // get the sample sets info
+        // note: if it's a slider, the edge_samplesets overrides
+        let mut sample_info = if let HitObjectKind::Slider(info) = &ho.kind {
+            let mut sample_info = ho.sample_info.clone();
+            if let Some(repeat_idx) = repeat_idx {
+                let samplesets = info.edge_samplesets[repeat_idx];
+                sample_info.sample_set = samplesets.0;
+                sample_info.addition_set = samplesets.1;
             }
+            sample_info
+        } else {
+            ho.sample_info.clone()
+        };
 
-            HitObjectKind::Spinner(info) => {
-                // the hitsound for a spinner is at the end only
-                hits.push(HitsoundInfo {
-                    time: info.end_time,
-                    vol: tp.volume,
-                    sample_set,
-                    addition_set,
-                    additions: ho.additions,
-                });
-            }
+        // default the sample set to the timing point's sample set
+        if let SampleSet::None = sample_info.sample_set {
+            sample_info.sample_set = tp.sample_set;
         }
-    }
 
-    Ok(HitsoundData { hits })
+        // default the additions set to the normal sample set
+        if let SampleSet::None = sample_info.addition_set {
+            sample_info.addition_set = sample_info.sample_set;
+        }
+
+        hits.push(HitsoundInfo {
+            time: hit_time,
+            additions,
+            sample_info,
+        });
+    }
+    hits.sort_by_key(|h| NotNan::new(h.time).unwrap());
+
+    let mut vols = Vec::new();
+
+    // collect all the volumes from the timing points
+    let mut last_vol = None;
+    for tp in beatmap.timing_points.iter() {
+        let should_push = if let Some(last_vol) = last_vol {
+            last_vol != tp.volume
+        } else {
+            true
+        };
+
+        if should_push {
+            vols.push((tp.time, tp.volume));
+        }
+
+        last_vol = Some(tp.volume);
+    }
+    vols.sort_by_key(|(t, _)| *t);
+
+    Ok(HitsoundData { hits, vols })
 }
 
 /// Given a set of hitsound data, and a beatmap, applies the hitsound data to the beatmap.
-fn apply_hitsounds(hitsound_data: &HitsoundData, beatmap: &mut Beatmap) -> Result<()> {
-    // this is a list of (hitsound index, hitobject index)
-    let mut circle_map = Vec::new();
-    // this is a list of (hitsound index, hitobject index, slider index)
-    let mut slider_map = Vec::new();
+fn apply_hitsounds(
+    hitsound_data: &HitsoundData,
+    beatmap: &mut Beatmap,
+    opts: &CopyHitsoundOpts,
+) -> Result<()> {
+    // doesn't hurt to make sure that these lists are sorted
+    beatmap.hit_objects.sort_by_key(|ho| ho.start_time);
+    beatmap.timing_points.sort_by_key(|tp| tp.time);
 
-    // iterate over all the hitobjects in the map
-    let mut iter = beatmap.hit_objects.iter().enumerate().peekable();
-    'outer: for (hs_idx, hit) in hitsound_data.hits.iter().enumerate() {
-        // get the next hitobject
-        let (ho_idx, ho) = loop {
-            let (ho_idx, ho) = match iter.peek() {
-                Some((ho_idx, ho)) => (*ho_idx, ho),
-                None => break 'outer,
-            };
+    let leniency = Millis(opts.leniency as i32).as_seconds();
 
-            let ho_end_time = beatmap.get_hitobject_end_time(ho);
-            if ho_end_time >= hit.time {
-                break (ho_idx, ho);
+    let hit_times = get_hit_times(&beatmap)?;
+    for (hit_time, ho_idx, repeat_idx) in hit_times {
+        // determine the hit using binary search over the collected data
+        let hit = match binary_search_for(hit_time, &hitsound_data.hits, leniency) {
+            Some(hit) => hit,
+            None => {
+                info!("did not find hitsound for time={}", hit_time);
+                continue;
             }
-
-            iter.next();
         };
 
-        if ho.start_time == hit.time {
-            if let HitObjectKind::Circle = ho.kind {
-                circle_map.push((hs_idx, ho_idx));
-            } else if let HitObjectKind::Slider { .. } = ho.kind {
-                circle_map.push((hs_idx, ho_idx));
+        if (hit_time - hit.time).abs() > leniency {
+            continue;
+        }
+
+        // get the hitobject
+        let ho = match beatmap.hit_objects.get_mut(ho_idx) {
+            Some(ho) => ho,
+            None => continue,
+        };
+
+        trace!(
+            "ho_idx: {}, ho_time: {}, hit_time: {}, hit.time: {}, diff: {}, repeat: {:?}",
+            ho_idx,
+            ho.start_time.0,
+            hit_time,
+            hit.time,
+            (hit_time - hit.time).abs(),
+            repeat_idx
+        );
+        trace!("hit: {:?}", hit);
+
+        if let Some(repeat_idx) = repeat_idx {
+            if let HitObjectKind::Slider(info) = &mut ho.kind {
+                // make sure it has that # of repeats
+                info.edge_samplesets.resize(
+                    info.num_repeats as usize + 1,
+                    (SampleSet::None, SampleSet::None),
+                );
+                info.edge_additions
+                    .resize(info.num_repeats as usize + 1, Additions::empty());
+
+                info.edge_samplesets[repeat_idx] =
+                    (hit.sample_info.sample_set, hit.sample_info.addition_set);
+                info.edge_additions[repeat_idx] = hit.additions;
+                trace!(
+                    "slider @ {} [repeat={}] (time={}) .edge_sets={:?}, .edge_additions={:?}",
+                    ho.start_time.0,
+                    repeat_idx,
+                    hit_time,
+                    (hit.sample_info.sample_set, hit.sample_info.addition_set),
+                    hit.additions
+                );
             }
-        } else if ho.start_time < hit.time {
-            if let HitObjectKind::Spinner(SpinnerInfo { end_time }) = ho.kind {
-                if end_time == hit.time {
-                    circle_map.push((hs_idx, ho_idx));
-                }
-            } else if let HitObjectKind::Slider(SliderInfo { num_repeats, .. }) = ho.kind {
-                let time_diff = (hit.time.0 - ho.start_time.0) as f64;
-                let duration = beatmap.get_slider_duration(ho).unwrap();
-                let num_repeats_approx = time_diff / duration;
-                let num_repeats_rounded = num_repeats_approx.round();
-                if num_repeats_rounded as u32 > num_repeats {
-                    continue;
-                }
-                let percent_diff = (num_repeats_rounded - num_repeats_approx).abs();
-                if percent_diff < 0.05 {
-                    let num_repeats = num_repeats_rounded as usize;
-                    slider_map.push((hs_idx, ho_idx, num_repeats));
-                }
-            }
+        } else {
+            ho.sample_info = hit.sample_info.clone();
+            ho.additions = hit.additions.clone();
         }
     }
 
-    // apply hitsounds to the hitobjects that have hitosunds on the start
-    for (hs_idx, ho_idx) in circle_map {
-        let hitsound = hitsound_data.hits.get(hs_idx).unwrap();
-        let mut hit_object = beatmap.hit_objects.get_mut(ho_idx).unwrap();
-
-        hit_object.additions = hitsound.additions;
-        hit_object.sample_info.sample_set = hitsound.sample_set;
-        hit_object.sample_info.addition_set = hitsound.addition_set;
-    }
-
-    // apply hitsounds to sliders
-    for (hs_idx, ho_idx, e_idx) in slider_map {
-        let hitsound: &HitsoundInfo = hitsound_data.hits.get(hs_idx).unwrap();
-        let hit_object: &mut HitObject = beatmap.hit_objects.get_mut(ho_idx).unwrap();
-        if let HitObjectKind::Slider(SliderInfo {
-            ref mut edge_additions,
-            ref mut edge_samplesets,
-            ..
-        }) = hit_object.kind
-        {
-            while edge_additions.len() <= e_idx {
-                edge_additions.push(Additions::empty());
-            }
-            edge_additions[e_idx] = hitsound.additions;
-
-            while edge_samplesets.len() <= e_idx {
-                edge_samplesets.push((SampleSet::None, SampleSet::None));
-            }
-            edge_samplesets[e_idx] = (hitsound.sample_set, hitsound.addition_set);
-        }
+    // apply the volumes to the timing points
+    // loop over volume ranges
+    for w in hitsound_data.vols.windows(2) {
+        let (first_vol_t, first_vol) = w[0];
+        let (second_vol_t, second_vol) = w[1];
     }
 
     Ok(())
@@ -240,4 +254,69 @@ fn reset_hitsounds(beatmap: &mut Beatmap) {
                 });
         }
     }
+}
+
+fn binary_search_for(
+    hit_time: f64,
+    hit_times: &[HitsoundInfo],
+    leniency: f64,
+) -> Option<&HitsoundInfo> {
+    trace!("binary searching for {}", hit_time);
+    let mut lo = 0;
+    let mut hi = hit_times.len() - 1;
+
+    while hi >= lo {
+        let mid = (lo + hi) / 2;
+        let k = &hit_times[mid];
+        let time = k.time;
+        trace!("lo={} hi={} mid={} mid_t={} mid={:?}", lo, hi, mid, time, k);
+
+        if (time - hit_time).abs() < leniency {
+            return Some(k);
+        } else if time < hit_time {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    None
+}
+
+/// Collect a list of EVERY possible time a hitsound could be played
+///
+/// This includes hitcircles, and every repeat / tail of sliders. The return value is
+/// (timestamp in seconds, index of hitobject, index of repeat (if slider))
+///
+/// Notably, this assumes that the hit_objects is sorted, since it refers to hit_objects by index
+fn get_hit_times(beatmap: &Beatmap) -> Result<Vec<(f64, usize, Option<usize>)>> {
+    let mut hit_times = Vec::new();
+
+    for (idx, ho) in beatmap.hit_objects.iter().enumerate() {
+        use HitObjectKind::*;
+        match &ho.kind {
+            Circle => hit_times.push((ho.start_time.as_seconds(), idx, None)),
+            Slider(info) => {
+                // this is for the sliderbody
+                let time = ho.start_time.as_seconds();
+                hit_times.push((time, idx, None));
+
+                let duration = beatmap
+                    .get_slider_duration(ho)
+                    .ok_or_else(|| anyhow!("failed to get slider duration for slider {}", ho))?;
+                let single_repeat_duration = duration / info.num_repeats as f64;
+
+                // once for each hitcircle on the slider
+                for i in 0..=info.num_repeats as usize {
+                    let this_time = time + (i as f64 * single_repeat_duration);
+                    hit_times.push((this_time, idx, Some(i)));
+                }
+            }
+            Spinner(info) => hit_times.push((info.end_time.as_seconds(), idx, None)),
+        }
+    }
+
+    hit_times.sort_by_key(|(t, _, _)| NotNan::new(*t).unwrap());
+
+    Ok(hit_times)
 }

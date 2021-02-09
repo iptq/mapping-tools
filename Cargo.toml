@@ -6,7 +6,9 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0.38"
-libosu = "0.0.21"
+libosu = { git = "https://github.com/iptq/libosu" }
+log = "0.4.14"
 serde = { version = "1.0.123", features = ["derive"] }
+stderrlog = "0.5.1"
 structopt = "0.3.21"
 toml = "0.5.8"

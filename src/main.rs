@@ -4,7 +4,16 @@ use structopt::StructOpt;
 use mapping_tools::*;
 
 #[derive(Debug, StructOpt)]
-enum Opt {
+struct Opt {
+    #[structopt(short = "v", long = "verbose", parse(from_occurrences))]
+    verbosity: usize,
+
+    #[structopt(subcommand)]
+    subcommand: Subcommand,
+}
+
+#[derive(Debug, StructOpt)]
+enum Subcommand {
     /// Copy hitsounds from one map to another.
     #[structopt(name = "copy-hitsounds")]
     CopyHitsounds {
@@ -20,9 +29,9 @@ enum Opt {
     },
 }
 
-impl Opt {
+impl Subcommand {
     pub fn run(self) -> Result<()> {
-        use Opt::*;
+        use Subcommand::*;
         match self {
             CopyHitsounds { opts } => mapping_tools::copy_hitsounds(opts),
             ExtractMetadata { opts } => mapping_tools::extract_metadata(opts),
@@ -33,6 +42,12 @@ impl Opt {
 
 fn main() -> Result<()> {
     let opt = Opt::from_args();
-    opt.run()?;
+    stderrlog::new()
+        .module(module_path!())
+        .verbosity(opt.verbosity)
+        .init()
+        .unwrap();
+
+    opt.subcommand.run()?;
     Ok(())
 }
