@@ -7,8 +7,10 @@ extern crate serde;
 #[macro_use]
 extern crate structopt;
 
+mod c;
 mod hitsounds;
 mod metadata;
 
 pub use crate::hitsounds::*;
 pub use crate::metadata::*;
+pub use crate::c::*;

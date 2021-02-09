@@ -1,0 +1,11 @@
+[package]
+name = "mapping-tools-cli"
+version = "0.1.0"
+authors = ["Michael Zhang <mail@mzhang.io>"]
+edition = "2018"
+
+[dependencies]
+mapping-tools = { path = ".." }
+structopt = "0.3.21"
+stderrlog = "0.5.1"
+anyhow = "1.0.38"

@@ -417,9 +417,18 @@ dependencies = [
  "libosu",
  "log",
  "serde",
- "stderrlog",
  "structopt",
  "toml",
+]
+
+[[package]]
+name = "mapping-tools-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mapping-tools",
+ "stderrlog",
+ "structopt",
 ]
 
 [[package]]

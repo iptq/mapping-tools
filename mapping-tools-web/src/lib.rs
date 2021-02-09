@@ -1,5 +1,8 @@
 #![recursion_limit = "256"]
 
+#[macro_use]
+extern crate yew;
+
 use std::io::Cursor;
 
 use libosu::prelude::*;
@@ -7,7 +10,6 @@ use mapping_tools::{copy_hitsounds, ExtraOpts};
 use wasm_bindgen::prelude::*;
 use yew::{
     events::ChangeData,
-    html,
     services::reader::{FileData, ReaderService, ReaderTask},
     Component, ComponentLink, Html, ShouldRender,
 };

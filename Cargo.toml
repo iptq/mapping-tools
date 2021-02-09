@@ -4,14 +4,19 @@ version = "0.1.0"
 authors = ["Michael Zhang <mail@mzhang.io>"]
 edition = "2018"
 
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
 [workspace]
-members = ["mapping-tools-web"]
+members = [
+    "mapping-tools-web",
+    "mapping-tools-cli",
+]
 
 [dependencies]
 anyhow = "1.0.38"
 libosu = { git = "https://github.com/iptq/libosu" }
 log = "0.4.14"
 serde = { version = "1.0.123", features = ["derive"] }
-stderrlog = "0.5.1"
-structopt = "0.3.21"
+structopt = { version = "0.3.21", default-features = false }
 toml = "0.5.8"
