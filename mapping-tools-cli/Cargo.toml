@@ -4,6 +4,10 @@ version = "0.1.0"
 authors = ["Michael Zhang <mail@mzhang.io>"]
 edition = "2018"
 
+[[bin]]
+name = "mapping-tools"
+path = "src/main.rs"
+
 [dependencies]
 mapping-tools = { path = ".." }
 structopt = "0.3.21"
