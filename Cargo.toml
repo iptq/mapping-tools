@@ -17,6 +17,7 @@ members = [
 anyhow = "1.0.38"
 libosu = { git = "https://github.com/iptq/libosu" }
 log = "0.4.14"
+same-file = "1.0.6"
 serde = { version = "1.0.123", features = ["derive"] }
 structopt = { version = "0.3.21", default-features = false }
 toml = "0.5.8"

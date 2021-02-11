@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use libosu::prelude::*;
+use same_file::is_same_file;
 
 #[derive(Debug, StructOpt)]
 pub struct CopyHitsoundOpts {
@@ -30,6 +31,11 @@ pub fn copy_hitsounds_cmd(opts: CopyHitsoundOpts) -> Result<()> {
 
     let mut dst_beatmaps = Vec::new();
     for dst in opts.dsts.iter() {
+        // don't overwrite the source file
+        if is_same_file(&opts.src, dst)? {
+            continue;
+        }
+
         let file = File::open(dst)?;
         dst_beatmaps.push(Beatmap::parse(file)?);
     }
@@ -37,6 +43,11 @@ pub fn copy_hitsounds_cmd(opts: CopyHitsoundOpts) -> Result<()> {
     copy_hitsounds(&src_beatmap, &mut dst_beatmaps, opts.extra)?;
 
     for (path, beatmap) in opts.dsts.iter().zip(dst_beatmaps) {
+        // don't overwrite the source file
+        if is_same_file(&opts.src, path)? {
+            continue;
+        }
+
         {
             let file = File::create(path)?;
             beatmap.write(file)?;
