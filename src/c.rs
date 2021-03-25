@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::hitsounds::{CopyHitsoundOpts, ExtraOpts, copy_hitsounds_cmd};
+use crate::hitsounds::{copy_hitsounds_cmd, CopyHitsoundOpts, ExtraOpts};
 
 fn convert_path(path: *const c_char) -> Result<PathBuf> {
     let path_cstr = unsafe { CStr::from_ptr(path) };

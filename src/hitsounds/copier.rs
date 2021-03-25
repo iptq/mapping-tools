@@ -29,6 +29,7 @@ pub fn copy_hitsounds_cmd(opts: CopyHitsoundOpts) -> Result<()> {
     let file = File::open(&opts.src)?;
     let src_beatmap = Beatmap::parse(file)?;
 
+    let mut paths = Vec::new();
     let mut dst_beatmaps = Vec::new();
     for dst in opts.dsts.iter() {
         // don't overwrite the source file
@@ -37,21 +38,16 @@ pub fn copy_hitsounds_cmd(opts: CopyHitsoundOpts) -> Result<()> {
         }
 
         let file = File::open(dst)?;
+        paths.push(dst);
         dst_beatmaps.push(Beatmap::parse(file)?);
     }
 
     copy_hitsounds(&src_beatmap, &mut dst_beatmaps, opts.extra)?;
 
-    for (path, beatmap) in opts.dsts.iter().zip(dst_beatmaps) {
-        // don't overwrite the source file
-        if is_same_file(&opts.src, path)? {
-            continue;
-        }
-
-        {
-            let file = File::create(path)?;
-            beatmap.write(file)?;
-        }
+    for (path, beatmap) in paths.iter().zip(dst_beatmaps) {
+        let file = File::create(path)?;
+        println!("writing {} - {} [{}] to {:?}", beatmap.artist, beatmap.title, beatmap.difficulty_name, path);
+        beatmap.write(file)?;
     }
 
     Ok(())
